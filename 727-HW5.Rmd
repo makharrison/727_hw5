@@ -1,0 +1,223 @@
+---
+title: "727 HW 5"
+author: "Makenna Harrison"
+date: "2023-11-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+github: https://github.com/makharrison/727_hw5
+
+```{r warning=FALSE,message=FALSE}
+library(censusapi)
+library(tidyverse)
+library(magrittr)
+library(factoextra)
+library(ggmap)
+library(ggalt)
+```
+
+```{r echo=FALSE}
+cs_key = "d3d7bac853d24c7f6f5e456bb6f13a6a6930ba9c"
+```
+
+Using censusapi, we can pull the desired data as follows:
+
+```{r}
+acs_il_c <- getCensus(name = "acs/acs5",
+ vintage = 2016,
+ vars = c("NAME", "B01003_001E", "B19013_001E", "B19301_001E"),
+ region = "county:*",
+ regionin = "state:17",
+ key = cs_key) %>%
+ rename(pop = B01003_001E,
+ hh_income = B19013_001E,
+ income = B19301_001E)
+ head(acs_il_c)
+```
+
+Additionally, we can pull map data for counties in IL.
+
+```{r}
+ il_map <- map_data("county", region = "illinois")
+ head(il_map)
+```
+
+Next, we can join the two frames together.
+
+```{r}
+acs_il_c <- acs_il_c %>%
+  mutate(county_clean = tolower(NAME),
+         county_clean = gsub(" county, illinois","",county_clean))
+```
+
+
+```{r}
+acs_map <- merge(acs_il_c,il_map,by.x="county_clean",by.y="subregion")
+```
+
+
+```{r}
+ ggplot(acs_map) +
+ geom_encircle(aes(x = long, y = lat, group = group, fill = income), s_shape = 1, expand = 0,
+                alpha = 0.2, color = "black", show.legend = TRUE)
+```
+
+Next, we can perform hierarchical clustering.
+
+```{r}
+acs_map_clean <- acs_map %>%
+  select(pop,hh_income,income) %>%
+  distinct()
+```
+
+First, we create the distance matrix
+
+```{r}
+hclust_d <- dist(acs_map_clean)
+```
+
+Next, we cluster using the ward method.
+
+```{r}
+hc_ward <- hclust(hclust_d, method = "ward.D2")
+```
+
+```{r}
+plot(hc_ward, main = "Ward", xlab = "", sub = "")
+rect.hclust(hc_ward, 
+            k = 6, 
+            border = "red")
+```
+There looks to be 6 clusters
+
+```{r}
+cutree(hc_ward, 6)
+```
+
+Next, we want to visualize these clusters. First, we need to add the clusters to a data frame.
+
+```{r}
+acs_map_clean2 <- acs_map %>%
+  select(county_clean, pop,hh_income,income) %>%
+  distinct() %>%
+  mutate(cluster = cutree(hc_ward, 6)) %>%
+  select(county_clean,cluster)
+```
+
+```{r}
+acs_map_new <- merge(acs_map, acs_map_clean2,by="county_clean")
+```
+
+
+```{r}
+ ggplot(acs_map_new) +
+ #geom_polygon(aes(x = long, y = lat, group = group, fill = cluster)) +
+ geom_encircle(aes(x = long, y = lat, group = group, fill = cluster), s_shape = 1, expand = 0,
+                alpha = 0.2, color = "black", show.legend = TRUE)
+```
+
+Now, we look at census tracts instead of counties.
+
+```{r}
+acs_il_t <- getCensus(name = "acs/acs5",
+vintage = 2016,
+vars = c("NAME", "B01003_001E", "B19013_001E", "B19301_001E"),
+region = "tract:*",
+regionin = "state:17",
+key = cs_key) %>%
+mutate_all(list(~ifelse(.==-666666666, NA, .))) %>%
+rename(pop = B01003_001E,
+hh_income = B19013_001E,
+income = B19301_001E)
+head(acs_il_t)
+```
+
+Let's clean the data for kmeans clustering.
+
+```{r}
+acs_il_t_clean <- acs_il_t%>%
+  select(NAME,pop,hh_income,income,county) %>%
+  distinct() %>%
+  na.omit() %>%
+  select(pop,hh_income,income)
+```
+
+Since we want to use K Means in this section, we start by determining the optimal number
+of K that results in Clusters with low within but high between variation. Plot within cluster
+sums of squares for a range of K (e.g. up to 20).
+
+The total within sum of squares is lower for larger values of k. Based on the plot, the elbow of the curve appears at k = 3.
+
+```{r warning=FALSE}
+fviz_nbclust(acs_il_t_clean, #data set we want to use
+             kmeans, #cluster method
+             method = "wss", #method used for estimating the optimal number of clusters
+             k.max = 20)
+```
+
+```{r}
+km_1 <- kmeans(acs_il_t_clean, 3, nstart = 20)
+```
+
+```{r}
+acs_il_t_clean <- acs_il_t_clean %>%
+  mutate(cluster = km_1$cluster)
+```
+
+
+The means for each cluster:
+
+```{r}
+km_1$centers
+```
+
+The most frequent counties for each cluster:
+
+```{r}
+acs_il_t_clean2 <- acs_il_t%>%
+  select(NAME,pop,hh_income,income,county) %>%
+  distinct() %>%
+  na.omit() %>%
+  mutate(cluster = acs_il_t_clean$cluster)
+```
+
+county 031 (Cook County) appears the most times for each of the three clusters.
+
+```{r}
+acs_il_t_clean2 %>% 
+  group_by(cluster) %>%
+  count(county) %>%
+  arrange(desc(n)) %>%
+  head(3) %>%
+  arrange(cluster)
+```
+
+Alternatively, we could write a look for calculate kmeans for each value of k:
+
+```{r}
+clusters <- lapply(1:10, function(i) kmeans(acs_il_t_clean, i, nstart = 20))
+```
+
+Additionally, we can see which cluster each tract would fall into for differing values of k.
+
+```{r}
+acs_il_t_clean %>%
+  mutate(
+    cluster1 = clusters[[1]]$cluster,
+    cluster2 = clusters[[2]]$cluster,
+    cluster3 = clusters[[3]]$cluster,
+    cluster4 = clusters[[4]]$cluster,
+    cluster5 = clusters[[5]]$cluster,
+    cluster6 = clusters[[6]]$cluster,
+    cluster7 = clusters[[7]]$cluster,
+    cluster8 = clusters[[8]]$cluster,
+    cluster9 = clusters[[9]]$cluster,
+    cluster10 = clusters[[10]]$cluster
+  ) %>%
+  head()
+```
+
